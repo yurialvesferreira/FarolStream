@@ -32,6 +32,8 @@ from config.settings import get_settings
 
 logger = logging.getLogger("publisher")
 
+_RECONNECT_DELAY_SECONDS = 2.0
+
 # --- Fábricas de eventos fake -------------------------------------------------
 
 _SERVICES = ["checkout", "payments", "auth", "orders", "notifications"]
@@ -120,7 +122,18 @@ async def run() -> None:
         while not stop.is_set():
             index = random.choices(range(len(types)), weights=weights)[0]
             envelope = build_envelope(types[index], makers[index]())
-            await redis.publish(settings.events_channel, json.dumps(envelope, ensure_ascii=False))
+            try:
+                await redis.publish(
+                    settings.events_channel, json.dumps(envelope, ensure_ascii=False)
+                )
+            except (aioredis.RedisError, OSError) as exc:
+                # Queda do Redis não pode matar o produtor: descarta o evento
+                # (Pub/Sub é fire-and-forget mesmo) e tenta de novo no próximo
+                # ciclo — a conexão se refaz sozinha quando o Redis voltar.
+                logger.warning("Redis indisponível (%s); tentando novamente…", exc)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(stop.wait(), timeout=_RECONNECT_DELAY_SECONDS)
+                continue
 
             delay = random.uniform(
                 settings.publisher_min_interval_seconds,

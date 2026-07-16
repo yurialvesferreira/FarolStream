@@ -72,11 +72,18 @@ export function useSSE(eventTypes: readonly string[]) {
         for (const type of types) {
           source.addEventListener(type, (raw) => {
             const message = raw as MessageEvent<string>;
+            let data: unknown;
+            try {
+              data = JSON.parse(message.data);
+            } catch {
+              // Payload malformado não pode derrubar o listener do tipo.
+              return;
+            }
             const record: SSEEvent = {
               id: message.lastEventId,
               type,
               receivedAt: Date.now(),
-              data: JSON.parse(message.data),
+              data,
             };
             setEventsByType((previous) => ({
               ...previous,

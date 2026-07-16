@@ -12,11 +12,13 @@ string, que é a mais portável, e trata o risco de vazamento de URL com defesa
 em profundidade:
 
 | Camada | Implementação |
-|--------|---------------|
+| ------ | ------------- |
 | **TTL de 60s** | O token expira um minuto após a emissão ([`tokens.py`](src/api/auth/tokens.py)) — a janela para replay é mínima. |
 | **One-time-use** | O `jti` é marcado como consumido com `SET NX` atômico no Redis; um token interceptado **depois** do handshake não abre outra conexão. |
 | **Escopo mínimo** | O token carrega `scope: sse:events` — não é a sessão do usuário; se vazar, não dá acesso a mais nada. |
 | **Fora dos logs** | O `log_format` do Nginx usa `$uri` (sem query string), então o token nunca aparece no access log ([`nginx/nginx.conf`](nginx/nginx.conf)). |
+| **Fora do Referer** | `Referrer-Policy: no-referrer` em todas as respostas — a URL com token nunca vaza para terceiros via header Referer. |
+| **Rate limit na emissão** | `limit_req` de 30 req/min por IP em `/api/auth/sse-token` (burst 10, HTTP 429) impede farm de tokens ([`nginx/nginx.conf`](nginx/nginx.conf)). |
 
 ## Tokens em logs
 
@@ -56,8 +58,8 @@ e alargar a janela de ataque.
 - [ ] **`JWT_SECRET` forte e rotacionável**: o `quick_start.sh` gera um
       aleatório para dev; em produção, use um gerenciador de segredos, não
       `.env` commitado.
-- [ ] **Rate limit** em `/auth/sse-token` (ex.: `limit_req` no Nginx) para
-      impedir farm de tokens.
+- [x] **Rate limit** em `/auth/sse-token` — implementado com `limit_req`
+      (30 req/min por IP, resposta 429) em [`nginx/nginx.conf`](nginx/nginx.conf).
 - [ ] **Limite de streams por usuário** no `EventBroker`, para conter abuso de
       conexões abertas.
 

@@ -1,5 +1,7 @@
 # FarolStream — SSE em produção, do protocolo ao proxy
 
+[![CI](https://github.com/yurialvesferreira/FarolStream/actions/workflows/ci.yml/badge.svg)](https://github.com/yurialvesferreira/FarolStream/actions/workflows/ci.yml)
+
 > **Boilerplate open-source de Server-Sent Events:** dois microsserviços produtores, Redis Pub/Sub como orquestrador, gateway FastAPI com conexão multiplexada, Nginx com timeouts corretos e dashboard Next.js com eventos nomeados — tudo em um único `./quick_start.sh`.
 
 ---
@@ -164,7 +166,26 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Cobrem as duas peças mais fáceis de errar: a serialização do protocolo (`formatter`) e o ciclo de vida do token (assinatura, expiração, escopo).
+Quatro suítes, nenhuma exige Docker ou Redis real:
+
+- **`test_formatter.py`** — serialização do protocolo (o `\n\n`, eventos nomeados, validação na borda);
+- **`test_tokens.py`** — ciclo de vida do token (assinatura, expiração, escopo);
+- **`test_broker.py`** — multiplexação, cleanup e backpressure do `EventBroker`, com fakeredis injetado via construtor (DI);
+- **`test_gateway_e2e.py`** — o fluxo completo na borda HTTP: handshake → stream com protocolo verificado no fio → cleanup no disconnect → 401 na reutilização do token. O stream é dirigido no nível ASGI, porque clientes de teste HTTP bufferizam respostas infinitas.
+
+O CI (GitHub Actions) roda `pytest` + `next build` com typecheck a cada push.
+
+---
+
+## 🔌 Adaptando para o seu projeto
+
+O gateway é agnóstico ao domínio — os três passos para plugá-lo em outro sistema:
+
+1. **Troque os produtores.** Qualquer serviço (em qualquer linguagem) que publique o envelope `{"id": "...", "type": "...", "data": {...}}` no canal Redis (`EVENTS_CHANNEL`) aparece nos streams. Os publishers deste repo são simuladores — substitua-os pelos seus serviços reais e delete `src/publisher/`.
+2. **Declare seus tipos de evento.** `ALLOWED_EVENT_TYPES=pedido,estoque,pagamento` no `.env` (o gateway descarta tipos fora da lista) e a mesma lista no front: `useSSE(['pedido', 'estoque', 'pagamento'])`.
+3. **Pendure o handshake na sua autenticação.** Proteja `POST /auth/sse-token` com a sessão real do seu sistema (cookie/Bearer) e inclua o `sub` do usuário nos claims em [tokens.py](src/api/auth/tokens.py) — o resto do fluxo permanece igual.
+
+Sem `.env`, o compose sobe com defaults de desenvolvimento (e o gateway loga um aviso sobre o `JWT_SECRET` default) — o `quick_start.sh` gera um segredo forte automaticamente.
 
 ---
 
@@ -182,6 +203,8 @@ Cada item do checklist de prontidão aponta para o arquivo que o implementa:
 - [x] **Front usa `addEventListener` para eventos nomeados** → [src/frontend/src/hooks/useSSE.ts](src/frontend/src/hooks/useSSE.ts)
 - [x] **Reconexão do cliente refaz o handshake** (token consumido não é reutilizado) → [src/frontend/src/hooks/useSSE.ts](src/frontend/src/hooks/useSSE.ts)
 - [x] **Payload inválido de produtor não derruba o stream** → [src/api/sse/formatter.py](src/api/sse/formatter.py)
+- [x] **Queda do Redis não mata fan-out nem produtores** (retry com backoff + `restart: unless-stopped`; `/healthz` reporta `degraded` se o fan-out morrer) → [src/api/core/redis_client.py](src/api/core/redis_client.py), [src/publisher/main.py](src/publisher/main.py)
+- [x] **Rate limit no handshake** (30 req/min por IP, HTTP 429) → [nginx/nginx.conf](nginx/nginx.conf)
 - [x] **Containers non-root, multi-stage, Redis sem porta pública** → [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml)
 - [ ] **Replay de eventos perdidos na reconexão** (`Last-Event-ID`) → exigiria Redis Streams no lugar do Pub/Sub; discutido em [docs/protocol.md](docs/protocol.md)
 - [ ] **TLS, rate limit e emissão de token autenticada** → pendências deliberadas do boilerplate, detalhadas em [SECURITY.md](SECURITY.md)

@@ -56,7 +56,7 @@ async def stream_events(request: Request, token: str = Query(...)) -> EventSourc
                     raw = await asyncio.wait_for(queue.get(), timeout=DISCONNECT_POLL_SECONDS)
                 except TimeoutError:
                     continue
-                event = to_server_sent_event(raw)
+                event = to_server_sent_event(raw, settings.allowed_event_type_set)
                 if event is not None:
                     yield event
         finally:

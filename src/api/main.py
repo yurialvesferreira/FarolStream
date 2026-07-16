@@ -27,6 +27,11 @@ logging.basicConfig(
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
+    if settings.jwt_secret == "dev-secret-change-me":
+        logging.getLogger(__name__).warning(
+            "JWT_SECRET está no valor default de desenvolvimento — "
+            "gere um segredo forte antes de expor este serviço (ver SECURITY.md)"
+        )
     await init_broker(
         redis_url=settings.redis_url,
         channel=settings.events_channel,
@@ -57,6 +62,13 @@ app.include_router(auth_router)
 app.include_router(sse_router)
 
 
-@app.get("/healthz", tags=["ops"], summary="Liveness + número de streams ativos")
+@app.get("/healthz", tags=["ops"], summary="Liveness + streams ativos + saúde do broker")
 async def healthz() -> dict:
-    return {"status": "ok", "active_streams": get_broker().listener_count}
+    broker = get_broker()
+    # "degraded" = a task de fan-out morreu (ex.: Redis fora do ar de vez):
+    # streams abertos não recebem mais eventos e o orquestrador deve reciclar.
+    return {
+        "status": "ok" if broker.is_healthy else "degraded",
+        "broker_connected": broker.is_healthy,
+        "active_streams": broker.listener_count,
+    }

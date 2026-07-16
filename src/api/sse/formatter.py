@@ -24,6 +24,8 @@ from sse_starlette.sse import ServerSentEvent
 
 logger = logging.getLogger(__name__)
 
+# Default de demonstração; em runtime o gateway usa ALLOWED_EVENT_TYPES do
+# .env (config/settings.py), passado pelo endpoint em stream.py.
 ALLOWED_EVENT_TYPES = frozenset({"log", "alert", "trade"})
 
 
@@ -51,7 +53,10 @@ def encode_sse(
     return "\n".join(lines) + "\n\n"
 
 
-def to_server_sent_event(raw: str) -> ServerSentEvent | None:
+def to_server_sent_event(
+    raw: str,
+    allowed_types: frozenset[str] = ALLOWED_EVENT_TYPES,
+) -> ServerSentEvent | None:
     """Converte o envelope JSON do Redis em um evento SSE nomeado.
 
     Retorna None para mensagens inválidas — o stream nunca quebra por causa
@@ -65,7 +70,7 @@ def to_server_sent_event(raw: str) -> ServerSentEvent | None:
         logger.warning("Mensagem malformada descartada: %.120s", raw)
         return None
 
-    if event_type not in ALLOWED_EVENT_TYPES:
+    if event_type not in allowed_types:
         logger.warning("Tipo de evento desconhecido descartado: %r", event_type)
         return None
 

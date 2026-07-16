@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     heartbeat_interval_seconds: int = 20
     stream_queue_maxsize: int = 100
     sse_retry_ms: int = 3000
+    # Tipos de evento aceitos pelo gateway (separados por vírgula). Para usar
+    # o boilerplate em outro domínio, troque aqui — sem tocar em código.
+    allowed_event_types: str = "log,alert,trade"
 
     # --- Auth (handshake SSE) ---
     jwt_secret: str = "dev-secret-change-me"
@@ -48,6 +51,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def allowed_event_type_set(self) -> frozenset[str]:
+        return frozenset(t.strip() for t in self.allowed_event_types.split(",") if t.strip())
 
 
 @lru_cache

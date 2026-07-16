@@ -21,11 +21,22 @@ import redis.asyncio as aioredis
 logger = logging.getLogger(__name__)
 
 
+_RECONNECT_DELAY_SECONDS = 2.0
+
+
 class EventBroker:
     """Uma conexão Redis Pub/Sub, N filas de assinantes em memória."""
 
-    def __init__(self, redis_url: str, channel: str, queue_maxsize: int = 100) -> None:
-        self._redis = aioredis.from_url(redis_url, decode_responses=True)
+    def __init__(
+        self,
+        redis_url: str,
+        channel: str,
+        queue_maxsize: int = 100,
+        redis_client: aioredis.Redis | None = None,
+    ) -> None:
+        # Injeção de dependência: os testes passam um cliente fake sem tocar
+        # na criação da conexão real (ver tests/test_broker.py).
+        self._redis = redis_client or aioredis.from_url(redis_url, decode_responses=True)
         self._channel = channel
         self._queue_maxsize = queue_maxsize
         self._subscribers: set[asyncio.Queue[str]] = set()
@@ -40,6 +51,15 @@ class EventBroker:
     @property
     def listener_count(self) -> int:
         return len(self._subscribers)
+
+    @property
+    def is_healthy(self) -> bool:
+        """False se a task de fan-out morreu — o /healthz expõe isso.
+
+        Sem este sinal, uma queda permanente do Redis deixaria streams abertos
+        que nunca mais recebem eventos, com o health check mentindo "ok".
+        """
+        return self._fan_out_task is not None and not self._fan_out_task.done()
 
     async def start(self) -> None:
         self._pubsub = self._redis.pubsub()
@@ -69,17 +89,33 @@ class EventBroker:
 
     async def _fan_out(self) -> None:
         assert self._pubsub is not None
-        async for message in self._pubsub.listen():
-            if message["type"] != "message":
-                continue
-            for queue in self._subscribers:
-                try:
-                    queue.put_nowait(message["data"])
-                except asyncio.QueueFull:
-                    # Consumidor lento: descarta o evento mais antigo em vez de
-                    # bloquear o fan-out para todos os outros streams.
-                    queue.get_nowait()
-                    queue.put_nowait(message["data"])
+        while True:
+            try:
+                async for message in self._pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    self._dispatch(message["data"])
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Queda do Redis não pode matar o fan-out em silêncio: os
+                # streams continuariam abertos sem nunca receber eventos.
+                logger.exception(
+                    "Conexão Pub/Sub perdida; reassinando em %.0fs", _RECONNECT_DELAY_SECONDS
+                )
+            await asyncio.sleep(_RECONNECT_DELAY_SECONDS)
+            with contextlib.suppress(Exception):
+                await self._pubsub.subscribe(self._channel)
+
+    def _dispatch(self, data: str) -> None:
+        for queue in self._subscribers:
+            try:
+                queue.put_nowait(data)
+            except asyncio.QueueFull:
+                # Consumidor lento: descarta o evento mais antigo em vez de
+                # bloquear o fan-out para todos os outros streams.
+                queue.get_nowait()
+                queue.put_nowait(data)
 
 
 # --- Singleton por processo, criado no lifespan do FastAPI (src/api/main.py) ---
